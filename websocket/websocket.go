@@ -14,11 +14,11 @@ import (
 func read(conn *connHandler, c *Client) {
 	defer func() {
 		conn.Close()
-		c.unregister <- conn
+		c.pubsub.unregister <- conn
 	}()
 
 	// registrer connection
-	c.register <- conn
+	c.pubsub.register <- conn
 
 	for {
 		p, err := wsutil.ReadClientText(conn.rwc)
@@ -27,10 +27,11 @@ func read(conn *connHandler, c *Client) {
 			return
 		}
 
+		// c.broadcaster.Publish(conn)
 		response := fmt.Sprintf("%s:%s", conn.channel, p)
 
 		// TODO -- broadcast to channel only
-		c.broadcast <- &Message{conn.channel, response}
+		c.pubsub.broadcast <- &Message{conn.channel, response}
 	}
 }
 
@@ -53,14 +54,8 @@ var _ http.Handler = (*Client)(nil)
 type Client struct {
 	// u upgrades the HTTP request to a websocket connection
 	u ws.HTTPUpgrader
-	// broadcast is the channel that receives messages from the server
-	broadcast chan *Message
-	// register is the channel that registers new connections
-	register chan *connHandler
-	// unregister is the channel that unregisters connections
-	unregister chan *connHandler
-	// connections is the list of connections
-	connections map[*connHandler]bool
+	// pubsub handles publishing messages to all connections
+	pubsub *PubSub
 }
 
 // ServeHTTP implements http.Handler
@@ -85,36 +80,10 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go write(&conn)
 }
 
-func (c *Client) listen() {
-	for {
-		select {
-		case conn := <-c.register:
-			c.connections[conn] = true
-		case conn := <-c.unregister:
-			// conn should have already been closed
-			delete(c.connections, conn)
-		case msg := <-c.broadcast:
-			// TODO -- redis subscribe goes here
-			for conn := range c.connections {
-				select {
-				case conn.rcv <- msg:
-				default:
-					conn.Close()
-					delete(c.connections, conn)
-				}
-			}
-		}
-	}
-}
-
 func NewClient() *Client {
 	c := Client{
-		broadcast:   make(chan *Message, 256),
-		register:    make(chan *connHandler),
-		unregister:  make(chan *connHandler),
-		connections: make(map[*connHandler]bool),
+		pubsub: NewPubSub(),
 	}
-	go c.listen()
 	return &c
 }
 
@@ -128,7 +97,6 @@ type connHandler struct {
 }
 
 func (c *connHandler) Close() error {
-	close(c.rcv)
 	return c.rwc.Close()
 }
 
