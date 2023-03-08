@@ -10,14 +10,15 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+	"github.com/redis/go-redis/v9"
 )
 
 type Message struct {
 	Channel string
-	Text    string
+	Payload string
 }
 
-func read(conn *connHandler, c *Client) {
+func read(conn *connHandler, ps PSubcriber) {
 	defer conn.Close()
 
 	for {
@@ -29,10 +30,13 @@ func read(conn *connHandler, c *Client) {
 
 		msg := &Message{
 			Channel: conn.channel,
-			Text:    fmt.Sprintf("%s:%s", conn.channel, p),
+			Payload: fmt.Sprintf("%s:%s", conn.channel, p),
 		}
 
-		c.ps.Publish(msg)
+		if err := ps.Publish(msg); err != nil {
+			log.Printf("publish err: %v", err)
+			return
+		}
 	}
 }
 
@@ -41,7 +45,7 @@ func write(conn *connHandler) {
 	defer conn.Close()
 
 	for p := range conn.rcv {
-		if err := wsutil.WriteServerText(conn.rwc, []byte(p.Text)); err != nil {
+		if err := wsutil.WriteServerText(conn.rwc, []byte(p.Payload)); err != nil {
 			log.Printf("write err: %v", err)
 			return
 		}
@@ -83,17 +87,23 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rcv:     make(chan *Message, 256),
 	}
 
+	// var rc *redis.Client
+	// rc.Conn().Publish(r.Context(), channel, "hello")
+	// rc.Subscribe(r.Context(), channel)
+
+	// ps := NewSubscriber()
+
 	unset := c.ps.Set(&conn)
 	defer unset()
 
 	// rwc, channelName, Publisher
-	go read(&conn, c)
+	go read(&conn, c.ps)
 	write(&conn) // I don't think this needs to be in a goroutine
 }
 
-func NewClient() *Client {
+func NewClient(r *redis.Client) *Client {
 	c := Client{
-		ps: newSubscriber(),
+		ps: NewRSubscriber(r),
 	}
 	return &c
 }
@@ -107,6 +117,14 @@ type connHandler struct {
 	channel string
 	// rcv is the channel that receives messages from the connection
 	rcv chan *Message
+}
+
+func (c *connHandler) Consume(msg *Message) {
+	c.rcv <- msg
+}
+
+func (c *connHandler) Produce() chan *Message {
+	return c.rcv
 }
 
 // Read implements io.ReadWriteCloser
