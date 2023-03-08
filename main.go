@@ -29,16 +29,24 @@ func run() error {
 		w.Write([]byte("hello world"))
 	})
 
-	c := websocket.NewClient(rc)
+	c := websocket.NewClient(
+		websocket.WithRedis(rc),
+	)
 
 	// join a chat room
 	mux.Get("/play", func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.URL.Query().Get("id")
 
+		// defer removing client from db
+		// this works because ServeHTTP is blocking
+
 		ctx := websocket.NewContext(r.Context(), roomID)
 		r = r.WithContext(ctx)
-		// channel, bufferSize
-		c.ServeHTTP(w, r)
+
+		c.ServeHTTP(w, r) // blocking statement
+
+		// runs when client disconnects
+		log.Print("client disconnected")
 	})
 
 	srv := http.Server{
