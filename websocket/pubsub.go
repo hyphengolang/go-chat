@@ -7,14 +7,18 @@ import (
 type PSubcriber interface {
 	Publisher
 	Subscriber
-	Set(conn *connHandler) (remove func())
+	// Set registers a new connection
+	// it returns a function that unregisters the connection
+	Set(conn *connHandler) (unset func())
 }
 
 type Publisher interface {
-	Publish(msg *Message)
+	// Publish sends a message to all connections
+	Publish(msg *Message) error
 }
 
 type Subscriber interface {
+	// Subscribe returns a channel that receives messages from all connections
 	Subscribe() <-chan *Message
 }
 
@@ -31,38 +35,37 @@ type psub struct {
 	connections *structures.SyncMap[string, structures.Set[*connHandler]]
 }
 
-func (p *psub) Set(conn *connHandler) (unset func()) {
-	p.register <- conn
-	return func() { p.unregister <- conn }
+func (s *psub) Set(conn *connHandler) (unset func()) {
+	s.register <- conn
+	return func() { s.unregister <- conn }
 }
 
 // Publish implements PSubcriber
-func (p *psub) Publish(msg *Message) {
-	p.broadcast <- msg
+func (s *psub) Publish(msg *Message) error {
+	s.broadcast <- msg
+	return nil
 }
 
 // Subscribe implements PSubcriber
-func (p *psub) Subscribe() <-chan *Message {
-	return p.broadcast
+func (s *psub) Subscribe() <-chan *Message {
+	return s.broadcast
 }
 
-func (p *psub) listen() {
+func (s *psub) listen() {
 	for {
 		select {
-		// channelName, connenction
-		case conn := <-p.register:
-			if conns, ok := p.connections.Load(conn.channel); ok {
+		case conn := <-s.register:
+			if conns, ok := s.connections.Load(conn.channel); ok {
 				conns.Add(conn)
 			} else {
-				p.connections.Store(conn.channel, structures.NewSet(conn))
+				s.connections.Store(conn.channel, structures.NewSet(conn))
 			}
-		// channelName, connenction
-		case conn := <-p.unregister:
-			if conns, ok := p.connections.Load(conn.channel); ok {
+		case conn := <-s.unregister:
+			if conns, ok := s.connections.Load(conn.channel); ok {
 				conns.Remove(conn)
 			}
-		case msg := <-p.Subscribe():
-			if conns, ok := p.connections.Load(msg.Channel); ok {
+		case msg := <-s.Subscribe():
+			if conns, ok := s.connections.Load(msg.Channel); ok {
 				for conn := range conns {
 					select {
 					case conn.rcv <- msg:
@@ -75,7 +78,7 @@ func (p *psub) listen() {
 	}
 }
 
-func newSubscriber() *psub {
+func NewSubscriber() PSubcriber {
 	ps := psub{
 		broadcast:   make(chan *Message, 256),
 		register:    make(chan *connHandler),
@@ -85,13 +88,3 @@ func newSubscriber() *psub {
 	go ps.listen()
 	return &ps
 }
-
-/*
-function init(clientId, interval, roomId) {
-	if (!clientId)
-		throw new Error("clientId is required")
-	let ws = new WebSocket(`ws://localhost:8080/play?id=${roomId ?? "default"}`);
-	ws.onmessage = (e) => console.log(e.data);
-	setInterval(() => ws.send(clientId), interval ?? 1000)
-}
-*/
