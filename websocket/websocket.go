@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -11,14 +12,13 @@ import (
 	"github.com/gobwas/ws/wsutil"
 )
 
-func read(conn *connHandler, c *Client) {
-	defer func() {
-		conn.Close()
-		c.pubsub.unregister <- conn
-	}()
+type Message struct {
+	Channel string
+	Text    string
+}
 
-	// registrer connection
-	c.pubsub.register <- conn
+func read(conn *connHandler, c *Client) {
+	defer conn.Close()
 
 	for {
 		p, err := wsutil.ReadClientText(conn.rwc)
@@ -27,20 +27,21 @@ func read(conn *connHandler, c *Client) {
 			return
 		}
 
-		// c.broadcaster.Publish(conn)
-		response := fmt.Sprintf("%s:%s", conn.channel, p)
+		msg := &Message{
+			Channel: conn.channel,
+			Text:    fmt.Sprintf("%s:%s", conn.channel, p),
+		}
 
-		// TODO -- broadcast to channel only
-		c.pubsub.broadcast <- &Message{conn.channel, response}
+		c.ps.Publish(msg)
 	}
 }
 
+// close, write
 func write(conn *connHandler) {
 	defer conn.Close()
 
 	for p := range conn.rcv {
-		err := wsutil.WriteServerText(conn.rwc, []byte(p.text))
-		if err != nil {
+		if err := wsutil.WriteServerText(conn.rwc, []byte(p.Text)); err != nil {
 			log.Printf("write err: %v", err)
 			return
 		}
@@ -54,20 +55,26 @@ var _ http.Handler = (*Client)(nil)
 type Client struct {
 	// u upgrades the HTTP request to a websocket connection
 	u ws.HTTPUpgrader
-	// pubsub handles publishing messages to all connections
-	pubsub *PubSub
+	// ps handles publishing messages to all connections
+	ps PSubcriber
 }
 
 // ServeHTTP implements http.Handler
 func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rwc, _, _, err := c.u.Upgrade(r, w)
-	if err != nil {
+	channel, ok := FromContext(r.Context())
+	if !ok {
+		http.Error(w, "channel not found", http.StatusBadRequest)
 		return
 	}
 
-	channel, ok := FromContext(r.Context())
-	if !ok {
-		channel = "default"
+	if channel == "" {
+		http.Error(w, "channel is empty", http.StatusBadRequest)
+		return
+	}
+
+	rwc, _, _, err := c.u.Upgrade(r, w)
+	if err != nil {
+		return
 	}
 
 	conn := connHandler{
@@ -76,16 +83,22 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rcv:     make(chan *Message, 256),
 	}
 
+	unset := c.ps.Set(&conn)
+	defer unset()
+
+	// rwc, channelName, Publisher
 	go read(&conn, c)
-	go write(&conn)
+	write(&conn) // I don't think this needs to be in a goroutine
 }
 
 func NewClient() *Client {
 	c := Client{
-		pubsub: NewPubSub(),
+		ps: newSubscriber(),
 	}
 	return &c
 }
+
+var _ io.ReadWriteCloser = (*connHandler)(nil)
 
 type connHandler struct {
 	// rwc is the underlying websocket connection
@@ -96,13 +109,22 @@ type connHandler struct {
 	rcv chan *Message
 }
 
-func (c *connHandler) Close() error {
-	return c.rwc.Close()
+// Read implements io.ReadWriteCloser
+func (c *connHandler) Read(p []byte) (n int, err error) {
+	return c.rwc.Read(p)
 }
 
-type Message struct {
-	channel string
-	text    string
+// Write implements io.ReadWriteCloser
+func (c *connHandler) Write(p []byte) (n int, err error) {
+	return c.rwc.Write(p)
+}
+
+func (c *connHandler) Close() error {
+	if err := c.rwc.Close(); err != nil {
+		return err
+	}
+	close(c.rcv)
+	return nil
 }
 
 type Context string
