@@ -4,9 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"go-chat/websocket"
 	"log"
 	"net/http"
+
+	"github.com/hyphengolang/websockets"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
@@ -31,11 +32,11 @@ func run() error {
 		w.Write([]byte("hello world"))
 	})
 
-	c := websocket.NewClient(
-		websocket.WithRedis(rc),
+	c := websockets.NewClient(
+		websockets.WithRedis(rc),
 	)
 
-	c.On("join", func(p websocket.ResponseWriter, b *websocket.Payload) {
+	c.On("join", func(p websockets.ResponseWriter, b *websockets.Payload) {
 		v, _ := b.Data.MarshalJSON()
 
 		if err := p.Publish(b.Method, v); err != nil {
@@ -50,7 +51,7 @@ func run() error {
 		// defer removing client from db
 		// this works because ServeHTTP is blocking
 
-		ctx := websocket.NewContext(r.Context(), roomID)
+		ctx := websockets.NewContext(r.Context(), roomID)
 		r = r.WithContext(ctx)
 
 		c.ServeHTTP(w, r) // blocking statement
