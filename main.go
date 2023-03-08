@@ -33,6 +33,14 @@ func run() error {
 		websocket.WithRedis(rc),
 	)
 
+	c.On("join", func(p websocket.ResponseWriter, b *websocket.Payload) {
+		v, _ := b.Data.MarshalJSON()
+
+		if err := p.Publish(b.Method, v); err != nil {
+			log.Printf("publish err: %v", err)
+		}
+	})
+
 	// join a chat room
 	mux.Get("/play", func(w http.ResponseWriter, r *http.Request) {
 		roomID := r.URL.Query().Get("id")
