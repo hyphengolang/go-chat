@@ -49,16 +49,39 @@ func read(conn *connHandler, c *Client) {
 			return
 		}
 
-		msg := &Message{
-			Channel: conn.channel,
-			Payload: p, //fmt.Sprintf("%s:%s", conn.channel, s),
-		}
-
-		if err := c.ps.Publish(msg); err != nil {
-			log.Printf("publish err: %v", err)
+		h, match := c.match(p.Method)
+		if !match {
+			log.Printf("no handler for %s", p.Method)
 			return
 		}
+
+		h.Serve(&response{conn.channel, c.ps}, &p)
 	}
+}
+
+type Request struct {
+	Data []byte
+}
+
+type ResponseWriter interface {
+	Publish(method string, p []byte) error
+}
+
+type response struct {
+	channel string
+	ps      Publisher
+}
+
+func (r *response) Publish(method string, p []byte) error {
+	var msg = &Message{
+		Channel: r.channel,
+		Payload: Payload{
+			Method: method,
+			Data:   json.RawMessage(p),
+		},
+	}
+
+	return r.ps.Publish(msg)
 }
 
 // close, write
@@ -124,7 +147,9 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewClient(opts ...Option) *Client {
-	c := Client{}
+	c := Client{
+		m: make(map[string]muxEntry),
+	}
 
 	for _, opt := range opts {
 		opt(&c)
