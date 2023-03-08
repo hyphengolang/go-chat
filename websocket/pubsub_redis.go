@@ -2,7 +2,9 @@ package websocket
 
 import (
 	"context"
+	"encoding/json"
 	"go-chat/pkg/structures"
+	"log"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -42,9 +44,9 @@ func (s *predis) Set(conn *connHandler) (unset func()) {
 	return func() { s.unregister <- conn }
 }
 
-// NewRSubscriber returns a new PSubcriber
+// newRSubscriber returns a new PSubcriber
 // using redis as the backend
-func NewRSubscriber(r *redis.Client) PSubcriber {
+func newRSubscriber(r *redis.Client) PSubcriber {
 	p := &predis{
 		r:           r,
 		sub:         r.Subscribe(context.Background()),
@@ -70,14 +72,23 @@ func (s *predis) listen() {
 		case conn := <-s.unregister:
 			if conns, ok := s.connections.Load(conn.channel); ok {
 				conns.Remove(conn)
+				// if there are no more connections
+				// unsubscribe from the channel
 			}
 		case msg := <-s.sub.Channel():
+			var p Payload
+			if err := json.Unmarshal([]byte(msg.Payload), &p); err != nil {
+				// if error, then connection is lost
+				log.Printf("error unmarshaling payload: %v", err)
+				continue
+			}
+
 			if conns, ok := s.connections.Load(msg.Channel); ok {
 				for conn := range conns {
 					select {
 					case conn.rcv <- &Message{
 						Channel: msg.Channel,
-						Payload: msg.Payload,
+						Payload: p,
 					}:
 					default:
 						conns.Remove(conn)

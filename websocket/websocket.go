@@ -2,7 +2,7 @@ package websocket
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"log"
 	"net"
@@ -14,26 +14,47 @@ import (
 )
 
 type Message struct {
-	Channel string
-	Payload string
+	Channel string  `json:"channel"`
+	Payload Payload `json:"payload"` //string
 }
 
-func read(conn *connHandler, ps PSubcriber) {
+// Payload is the data sent to the client
+type Payload struct {
+	Method string          `json:"method"`
+	Data   json.RawMessage `json:"data,omitempty"`
+}
+
+func (p Payload) MarshalBinary() ([]byte, error) {
+	return json.Marshal(p)
+}
+
+func (p *Payload) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, p)
+}
+
+func read(conn *connHandler, c *Client) {
 	defer conn.Close()
 
 	for {
-		p, err := wsutil.ReadClientText(conn.rwc)
+		s, err := wsutil.ReadClientText(conn.rwc)
 		if err != nil {
 			log.Printf("read err: %v", err)
 			return
 		}
 
-		msg := &Message{
-			Channel: conn.channel,
-			Payload: fmt.Sprintf("%s:%s", conn.channel, p),
+		// FIXME if message isn't JSON, log and continue
+		var p Payload
+		if err := json.Unmarshal(s, &p); err != nil {
+			log.Printf("json err: %v", err)
+			return
 		}
 
-		if err := ps.Publish(msg); err != nil {
+		msg := &Message{
+			Channel: conn.channel,
+			Payload: p, //fmt.Sprintf("%s:%s", conn.channel, s),
+		}
+
+		if err := c.ps.Publish(msg); err != nil {
 			log.Printf("publish err: %v", err)
 			return
 		}
@@ -44,8 +65,14 @@ func read(conn *connHandler, ps PSubcriber) {
 func write(conn *connHandler) {
 	defer conn.Close()
 
-	for p := range conn.rcv {
-		if err := wsutil.WriteServerText(conn.rwc, []byte(p.Payload)); err != nil {
+	for msg := range conn.rcv {
+		p, err := json.Marshal(msg.Payload)
+		if err != nil {
+			log.Printf("json err: %v", err)
+			return
+		}
+
+		if err := wsutil.WriteServerText(conn.rwc, p); err != nil {
 			log.Printf("write err: %v", err)
 			return
 		}
@@ -61,6 +88,8 @@ type Client struct {
 	u ws.HTTPUpgrader
 	// ps handles publishing messages to all connections
 	ps PSubcriber
+	// m is the map of muxEntries
+	m map[string]muxEntry
 }
 
 // ServeHTTP implements http.Handler
@@ -87,25 +116,33 @@ func (c *Client) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		rcv:     make(chan *Message, 256),
 	}
 
-	// var rc *redis.Client
-	// rc.Conn().Publish(r.Context(), channel, "hello")
-	// rc.Subscribe(r.Context(), channel)
-
-	// ps := NewSubscriber()
-
 	unset := c.ps.Set(&conn)
 	defer unset()
 
-	// rwc, channelName, Publisher
-	go read(&conn, c.ps)
+	go read(&conn, c)
 	write(&conn) // I don't think this needs to be in a goroutine
 }
 
-func NewClient(r *redis.Client) *Client {
-	c := Client{
-		ps: NewRSubscriber(r),
+func NewClient(opts ...Option) *Client {
+	c := Client{}
+
+	for _, opt := range opts {
+		opt(&c)
 	}
+
+	if c.ps == nil {
+		c.ps = NewSubscriber()
+	}
+
 	return &c
+}
+
+type Option func(*Client)
+
+func WithRedis(r *redis.Client) Option {
+	return func(c *Client) {
+		c.ps = newRSubscriber(r)
+	}
 }
 
 var _ io.ReadWriteCloser = (*connHandler)(nil)
@@ -117,14 +154,6 @@ type connHandler struct {
 	channel string
 	// rcv is the channel that receives messages from the connection
 	rcv chan *Message
-}
-
-func (c *connHandler) Consume(msg *Message) {
-	c.rcv <- msg
-}
-
-func (c *connHandler) Produce() chan *Message {
-	return c.rcv
 }
 
 // Read implements io.ReadWriteCloser
