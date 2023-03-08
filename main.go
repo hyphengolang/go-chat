@@ -18,15 +18,13 @@ func run() error {
 
 	c := websocket.NewClient()
 
-	// create a new chat room
-
 	// join a chat room
 	mux.Get("/play", func(w http.ResponseWriter, r *http.Request) {
-		roomID := "#123"
+		roomID := r.URL.Query().Get("id")
 
 		ctx := websocket.NewContext(r.Context(), roomID)
 		r = r.WithContext(ctx)
-
+		// channel, bufferSize
 		c.ServeHTTP(w, r)
 	})
 
