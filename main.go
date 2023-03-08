@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"go-chat/websocket"
 	"log"
 	"net/http"
@@ -58,7 +60,7 @@ func run() error {
 	})
 
 	srv := http.Server{
-		Addr:    ":8080",
+		Addr:    fmt.Sprintf(":%d", port),
 		Handler: mux,
 	}
 
@@ -66,9 +68,14 @@ func run() error {
 	return srv.ListenAndServe()
 }
 
+var port int
+
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetPrefix("go-chat: ")
+
+	flag.IntVar(&port, "port", 8080, "port to listen on")
+	flag.Parse()
 }
 
 func main() {
