@@ -1,14 +1,27 @@
 package main
 
 import (
+	"context"
 	"go-chat/websocket"
 	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 func run() error {
+	opt, err := redis.ParseURL("redis://localhost:6379")
+	if err != nil {
+		return err
+	}
+	rc := redis.NewClient(opt)
+	defer rc.Close()
+
+	if err := rc.Ping(context.Background()).Err(); err != nil {
+		return err
+	}
+
 	mux := chi.NewRouter()
 
 	// simple hello world
@@ -16,7 +29,7 @@ func run() error {
 		w.Write([]byte("hello world"))
 	})
 
-	c := websocket.NewClient()
+	c := websocket.NewClient(rc)
 
 	// join a chat room
 	mux.Get("/play", func(w http.ResponseWriter, r *http.Request) {
